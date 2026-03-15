@@ -1,8 +1,16 @@
+import os
 import struct
 import sys
 from argparse import ArgumentParser
 
 BOX_SIZE = 8
+
+
+class Boxes(dict):
+    def info(self):
+        r = ",".join(self.keys())
+
+        return r
 
 
 def find_boxes(f, start_offset=0, end_offset=float("inf")):
@@ -12,7 +20,7 @@ def find_boxes(f, start_offset=0, end_offset=float("inf")):
     Specify a start_offset and end_offset to read sub-boxes.
     """
     s = struct.Struct("> I 4s")
-    boxes = {}
+    boxes = Boxes()
     offset = start_offset
     f.seek(offset, 0)
     while offset < end_offset:
@@ -20,16 +28,16 @@ def find_boxes(f, start_offset=0, end_offset=float("inf")):
         if data == b"": break  # EOF
         length, text = s.unpack(data)
         if length == 1:
-            # f.seek(BOX_SIZE, 1)  # skip to next box
             data = f.read(BOX_SIZE)  # read box header
             if data == b"": break  # EOF
             nilLength, length = struct.unpack(">II", data)
             if nilLength != 0:
                 break
-            length = length - BOX_SIZE
-        f.seek(length - BOX_SIZE, 1)  # skip to next box
+            f.seek(length - 2 * BOX_SIZE, 1)  # skip to next box
+        else:
+            f.seek(length - BOX_SIZE, 1)  # skip to next box
 
-        boxes[text] = (offset, offset + length)
+        boxes[text.decode('UTF-8')] = (offset, offset + length)
         offset += length
     return boxes
 
@@ -50,29 +58,48 @@ def scan_mvhd(f, offset):
 
     duration = int.from_bytes(f.read(word_size), "big")
 
-    print("Duration (sec):", duration / timescale)
+    # print("Duration (sec):", duration / timescale)
 
 
 def examine_mp4(filename: str):
-    print("Examining:", filename)
+    f = Mp4File()
+    f.open(filename)
+    print(f)
 
-    with open(filename, "rb") as f:
-        boxes = find_boxes(f)
-        print(boxes)
 
-        # Sanity check that this really is a movie file.
-        assert (boxes[b"ftyp"][0] == 0)
+class Mp4File:
+    def __init__(self):
+        self.boxes = Boxes()
+        self.name = ""
 
-        moov_boxes = find_boxes(f, boxes[b"moov"][0] + BOX_SIZE, boxes[b"moov"][1])
-        print(moov_boxes)
+    def __str__(self):
+        return self.name + ": " + str(self.boxes.info())
 
-        trak_boxes = find_boxes(f, moov_boxes[b"trak"][0] + BOX_SIZE, moov_boxes[b"trak"][1])
-        print(trak_boxes)
+    def open(self, filename: str):
+        self.name = filename
+        with open(filename, "rb") as f:
+            boxes = find_boxes(f)
 
-        udta_boxes = find_boxes(f, moov_boxes[b"udta"][0] + BOX_SIZE, moov_boxes[b"udta"][1])
-        print(udta_boxes)
+            # Sanity check that this really is a movie file.
+            if boxes.get("ftyp") is not None:
+                if boxes["ftyp"][0] != 0:
+                    return
 
-        scan_mvhd(f, moov_boxes[b"mvhd"][0])
+            self.boxes = boxes
+            if self.boxes.get("moov") is not None:
+                self.moov_boxes = find_boxes(f, self.boxes["moov"][0] + BOX_SIZE, self.boxes["moov"][1])
+
+                if self.moov_boxes.get("trak") is not None:
+                    self.trak_boxes = find_boxes(f, self.moov_boxes["trak"][0] + BOX_SIZE, self.moov_boxes["trak"][1])
+
+                if self.moov_boxes.get("udta") is not None:
+                    self.udta_boxes = find_boxes(f, self.moov_boxes["udta"][0] + BOX_SIZE, self.moov_boxes["udta"][1])
+
+                    if self.udta_boxes.get("meta") is not None:
+                        meta = find_boxes(f, self.udta_boxes["meta"][0] + BOX_SIZE, self.udta_boxes["meta"][1])
+                        print(meta)
+
+            # scan_mvhd(f, self.moov_self.boxes["mvhd"][0])
 
 
 def examine_mp4s(filenames: list):
