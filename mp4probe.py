@@ -61,6 +61,27 @@ def scan_mvhd(f, offset):
     # print("Duration (sec):", duration / timescale)
 
 
+class Meta():
+    def __init__(self, bytes):
+        self.bytes = bytes
+
+    def __str__(self):
+        r = ""
+        for b in self.bytes:
+            if b < 32 or b > 126:
+                r += "."
+            else:
+                r += chr(b)
+
+        return r
+
+def read_meta(f, offset, end_offset):
+    f.seek(offset, 0)
+    b = f.read(end_offset - offset)
+
+    return Meta(b)
+
+
 def examine_mp4(filename: str):
     f = Mp4File()
     f.open(filename)
@@ -69,11 +90,13 @@ def examine_mp4(filename: str):
 
 class Mp4File:
     def __init__(self):
+        self.name = None
         self.boxes = Boxes()
-        self.name = ""
+        self.moov_boxes = None
+        self.meta = None
 
     def __str__(self):
-        return self.name + ": " + str(self.boxes.info())
+        return self.name + ": " + str(self.boxes.info() + " meta:" + self.meta.__str__())
 
     def open(self, filename: str):
         self.name = filename
@@ -89,15 +112,20 @@ class Mp4File:
             if self.boxes.get("moov") is not None:
                 self.moov_boxes = find_boxes(f, self.boxes["moov"][0] + BOX_SIZE, self.boxes["moov"][1])
 
+                if self.moov_boxes.get("meta") is not None:
+                    meta = find_boxes(f, self.moov_boxes["meta"][0] + BOX_SIZE, self.moov_boxes["meta"][1])
+                    self.meta = Meta(b"moov[meta]:"+bytes(meta.info(), 'ascii'))
+
                 if self.moov_boxes.get("trak") is not None:
                     self.trak_boxes = find_boxes(f, self.moov_boxes["trak"][0] + BOX_SIZE, self.moov_boxes["trak"][1])
 
                 if self.moov_boxes.get("udta") is not None:
                     self.udta_boxes = find_boxes(f, self.moov_boxes["udta"][0] + BOX_SIZE, self.moov_boxes["udta"][1])
 
-                    if self.udta_boxes.get("meta") is not None:
-                        meta = find_boxes(f, self.udta_boxes["meta"][0] + BOX_SIZE, self.udta_boxes["meta"][1])
-                        print(meta)
+                    meta = self.udta_boxes.get("meta")
+                    if meta is not None:
+                        meta = read_meta(f, meta[0] + BOX_SIZE, meta[1])
+                        self.meta = meta
 
             # scan_mvhd(f, self.moov_self.boxes["mvhd"][0])
 
