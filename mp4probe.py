@@ -2,132 +2,79 @@ import os
 import struct
 import sys
 from argparse import ArgumentParser
+from typing import List
 
-BOX_SIZE = 8
-
-
-class Boxes(dict):
-    def info(self):
-        r = ",".join(self.keys())
-
-        return r
+from mp4analyzer import MP4Box, parse_mp4_boxes
+from mp4analyzer.boxes import FileTypeBox, MovieBox, MovieHeaderBox, MetaBox, UserDataBox
 
 
-def find_boxes(f, start_offset=0, end_offset=float("inf")):
-    """Returns a dictionary of all the data boxes and their absolute starting
-    and ending offsets inside the mp4 file.
-
-    Specify a start_offset and end_offset to read sub-boxes.
-    """
-    s = struct.Struct("> I 4s")
-    boxes = Boxes()
-    offset = start_offset
-    f.seek(offset, 0)
-    while offset < end_offset:
-        data = f.read(BOX_SIZE)  # read box header
-        if data == b"": break  # EOF
-        length, text = s.unpack(data)
-        if length == 1:
-            data = f.read(BOX_SIZE)  # read box header
-            if data == b"": break  # EOF
-            nilLength, length = struct.unpack(">II", data)
-            if nilLength != 0:
-                break
-            f.seek(length - 2 * BOX_SIZE, 1)  # skip to next box
+def printable_only(data: bytes):
+    r = ""
+    for b in data:
+        if b >= 0x32 and b < 0x7e:
+            r += chr(b)
         else:
-            f.seek(length - BOX_SIZE, 1)  # skip to next box
-
-        boxes[text.decode('UTF-8')] = (offset, offset + length)
-        offset += length
-    return boxes
+            r += "."
+    return r
 
 
-def scan_mvhd(f, offset):
-    f.seek(offset, 0)
-    f.seek(8, 1)  # skip box header
-
-    data = f.read(1)  # read version number
-    version = int.from_bytes(data, "big")
-    word_size = 8 if version == 1 else 4
-
-    f.seek(3, 1)  # skip flags
-    f.seek(word_size * 2, 1)  # skip dates
-
-    timescale = int.from_bytes(f.read(4), "big")
-    if timescale == 0: timescale = 600
-
-    duration = int.from_bytes(f.read(word_size), "big")
-
-    # print("Duration (sec):", duration / timescale)
+def find_meta(box: MP4Box):
+    for child in box.children:
+        if isinstance(child, MovieHeaderBox):
+            meta = find_meta(child)
+            if meta:
+                return meta
+        elif isinstance(child, UserDataBox):
+            meta = find_meta(child)
+            if meta:
+                return meta
+        else:
+            if isinstance(child, MetaBox):
+                return printable_only(child.data)
+    return ""
 
 
-class Meta():
-    def __init__(self, bytes):
-        self.bytes = bytes
+class Boxes:
+    def __init__(self, boxes: List[MP4Box]):
+        self.boxes = boxes
 
-    def __str__(self):
+    def __str__(self) -> str:
         r = ""
-        for b in self.bytes:
-            if b < 32 or b > 126:
-                r += "."
-            else:
-                r += chr(b)
-
+        meta = []
+        for box in self.boxes:
+            s = box.type
+            if isinstance(box, FileTypeBox):
+                s += ":[" + box.major_brand + ",".join(box.compatible_brands) + "]"
+            if isinstance(box, MovieBox):
+                meta.append("[" + find_meta(box) + "]")
+            if r != "":
+                r += " / "
+            r += s
+        if meta != []:
+            r += " / meta:[" + ",".join(meta) + "]"
         return r
 
-def read_meta(f, offset, end_offset):
-    f.seek(offset, 0)
-    b = f.read(end_offset - offset)
-
-    return Meta(b)
-
-
-def examine_mp4(filename: str):
-    f = Mp4File()
-    f.open(filename)
-    print(f)
+        return r
 
 
 class Mp4File:
     def __init__(self):
         self.name = None
-        self.boxes = Boxes()
-        self.moov_boxes = None
-        self.meta = None
+        self.boxes = None
 
-    def __str__(self):
-        return self.name + ": " + str(self.boxes.info() + " meta:" + self.meta.__str__())
+    def __str__(self) -> str:
+        return self.name + ": " + self.boxes.__str__()
 
-    def open(self, filename: str):
+    def open(self, filename: str) -> Mp4File:
         self.name = filename
-        with open(filename, "rb") as f:
-            boxes = find_boxes(f)
+        self.boxes = Boxes(parse_mp4_boxes(filename))
 
-            # Sanity check that this really is a movie file.
-            if boxes.get("ftyp") is not None:
-                if boxes["ftyp"][0] != 0:
-                    return
+        return self
 
-            self.boxes = boxes
-            if self.boxes.get("moov") is not None:
-                self.moov_boxes = find_boxes(f, self.boxes["moov"][0] + BOX_SIZE, self.boxes["moov"][1])
 
-                if self.moov_boxes.get("meta") is not None:
-                    meta = find_boxes(f, self.moov_boxes["meta"][0] + BOX_SIZE, self.moov_boxes["meta"][1])
-                    self.meta = Meta(b"moov[meta]:"+bytes(meta.info(), 'ascii'))
-
-                if self.moov_boxes.get("trak") is not None:
-                    self.trak_boxes = find_boxes(f, self.moov_boxes["trak"][0] + BOX_SIZE, self.moov_boxes["trak"][1])
-
-                if self.moov_boxes.get("udta") is not None:
-                    self.udta_boxes = find_boxes(f, self.moov_boxes["udta"][0] + BOX_SIZE, self.moov_boxes["udta"][1])
-
-                    meta = self.udta_boxes.get("meta")
-                    if meta is not None:
-                        meta = read_meta(f, meta[0] + BOX_SIZE, meta[1])
-                        self.meta = meta
-
-            # scan_mvhd(f, self.moov_self.boxes["mvhd"][0])
+def examine_mp4(filename: str):
+    f = Mp4File().open(filename)
+    print(f)
 
 
 def examine_mp4s(filenames: list):
